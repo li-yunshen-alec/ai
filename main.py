@@ -8,20 +8,47 @@ import google.generativeai as genai
 from datetime import datetime, timedelta
 from queue import Queue
 from time import sleep
+import edge_tts
+import asyncio
+import io
+from pydub import AudioSegment
+from pydub.playback import play
 
 # Configure the API key using an environment variable
 genai.configure(api_key='AIzaSyAEAh4mufNHAh_FiMwD_4nE8xng8Elll6w')
 
-# Instantiate the model
-model = genai.GenerativeModel('gemini-1.5-flash')
+# Instantiate the model and start a chat session
+model = genai.GenerativeModel(
+    model_name="gemini-1.5-flash",
+    system_instruction="You are a cat. Your name is Neko. All your responses are short and sweet and kept to 50 tokens or less, as if you were speaking to me in a typical conversation."
+)
 
-def chat(prompt):
+chat = model.start_chat(
+    history=[
+        {"role": "user", "parts": "Hello"},
+        {"role": "model", "parts": "Great to meet you. What would you like to know?"},
+    ]
+)
+
+def chat_with_model(prompt):
     try:
-        response = model.generate_content(prompt)
-        return response['content']  # Assuming 'content' is the correct key for the response text
+        response = chat.send_message(prompt)
+        return response.text
     except Exception as e:
         print(f"An error occurred: {e}")
         return "Sorry, I couldn't process your request."
+
+async def generate_and_play_speech(text):
+    """Generate speech from text using edge_tts and play it immediately."""
+    communicate = edge_tts.Communicate(text, "en-GB-SoniaNeural")
+    audio_data = io.BytesIO()
+    async for chunk in communicate.stream():
+        if chunk["type"] == "audio":
+            audio_data.write(chunk["data"])
+
+    audio_data.seek(0)
+    audio_segment = AudioSegment.from_file(audio_data, format="mp3")
+    play(audio_segment)
 
 def main():
     parser = argparse.ArgumentParser()
@@ -31,7 +58,7 @@ def main():
                         help="Don't use the english model.")
     parser.add_argument("--energy_threshold", default=1000,
                         help="Energy level for mic to detect.", type=int)
-    parser.add_argument("--record_timeout", default=2,
+    parser.add_argument("--record_timeout", default=10,
                         help="How real time the recording is in seconds.", type=float)
     parser.add_argument("--phrase_timeout", default=3,
                         help="How much empty space between recordings before we "
@@ -39,7 +66,7 @@ def main():
     args = parser.parse_args()
 
     # The last time a recording was retrieved from the queue.
-    phrase_time = None
+    phrase_time = datetime.utcnow()
     # Thread safe Queue for passing data from the threaded recording callback.
     data_queue = Queue()
     # We use SpeechRecognizer to record our audio because it has a nice feature where it can detect when speech ends.
@@ -114,7 +141,7 @@ def main():
                     transcription[-1] = text
 
                 # Clear the console to reprint the updated transcription.
-                os.system('cls' if os.name=='nt' else 'clear')
+                os.system('cls' if os.name == 'nt' else 'clear')
                 for line in transcription:
                     print(line)
                 # Flush stdout.
@@ -122,8 +149,10 @@ def main():
 
                 # Use the transcribed text as the prompt for the chatbot
                 if phrase_complete:
-                    response = chat(text)
+                    response = chat_with_model(text)
                     print("Chatbot:", response)
+                    # Generate and play speech immediately
+                    asyncio.run(generate_and_play_speech(response))
 
             else:
                 # Infinite loops are bad for processors, must sleep.
